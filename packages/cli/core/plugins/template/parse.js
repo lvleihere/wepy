@@ -4,6 +4,8 @@ const onRE = /^@|^v-on:/;
 const bindRE = /^:|^v-bind:/;
 const modifierRE = /\.[^.]+/g;
 
+const nativeBindRE = /^bind:?|^catch:?|^capture-bind:?|^capture-catch:?/;
+
 
 const toAST = (html) => {
   return new Promise((resolve, reject) => {
@@ -38,10 +40,68 @@ exports = module.exports = function () {
 
   this.register('template-parse-ast-attr', function parseAstAttr (item, scope, rel, ctx) {
     let attrs = item.attribs;
-    let parsedAttr = {};
+    let parsedAttr = item.parsedAttr || {};
     let isComponent = !!rel.components[item.name];
     let parsed = null;
 
+    let cleanAttrs = [];
+
+
+    // Pre walk attributes
+    for (let name in attrs) {
+      let expr = attrs[name];
+
+      ({ item, name, expr } = this.hookUniqueReturnArg('template-parse-ast-pre-attr-' + name, { item, name, expr }));
+
+      let modifiers = parseModifiers(name);
+
+      if (modifiers) {
+        name = name.replace(modifierRE, '');
+      }
+
+      let hook = 'template-parse-ast-pre-attr-' + name;
+
+      if (!this.hasHook(hook)) {
+        hook = 'template-parse-ast-pre-attr-[other]';
+      }
+
+      ({ item, name, expr, modifiers, scope, ctx } = this.hookUniqueReturnArg(hook, { item, name, expr, modifiers, scope, ctx }))
+
+      cleanAttrs.push({
+        item: item,
+        name: name,
+        expr: expr,
+        modifiers: modifiers
+      });
+    }
+
+    // Apply walk attributes
+    cleanAttrs.forEach(({ item, name, expr, modifiers }) => {
+
+      let hook = 'template-parse-ast-attr-' + name;
+      if (!this.hasHook(hook)) {
+        hook = 'template-parse-ast-attr-[other]';
+      }
+
+      parsed = this.hookUnique(hook, { item, name, expr, modifiers, scope, ctx });
+
+      let applyHook = parsed.hook || `template-parse-ast-attr-${name}-apply`;
+      if (!this.hasHook(applyHook)) {
+        applyHook = `template-parse-ast-attr-[other]-apply`;
+      }
+
+      ({ parsed, rel } = this.hookUniqueReturnArg(applyHook, { parsed, rel }));
+
+      if (parsed && parsed.attrs) {
+        parsedAttr = Object.assign(parsedAttr, parsed.attrs);
+      }
+
+    });
+
+    item.parsedAttr = parsedAttr;
+
+    return [ item, scope, rel ];
+    /* REMOVE LATER
     for (let name in attrs) {
 
       let expr = attrs[name];
@@ -65,10 +125,31 @@ exports = module.exports = function () {
         continue;
       }
 
-      let handlers = {};
-      let isHandler = false;
+      if (nativeBindRE.test(name)) {
+        let bindType = name.match(nativeBindRE)[0];
+        name = name.replace(bindType, '');
+        modifiers = {};
+        if (bindType[bindType.length - 1] === ':') {
+          bindType = bindType.substring(0, bindType.length - 1);
+        }
+        switch (bindType) {
+          case 'bind':
+            break;
+          case 'catch':
+            modifiers.stop = true;
+            break;
+          case 'capture-bind':
+            modifiers.capture = true;
+            break;
+          case 'capture-catch':
+            modifiers.stop = true;
+            modifiers.capture = true;
+            break;
+        }
 
-      if (bindRE.test(name)) { // :prop or v-bind:prop;
+        let parsedNativeBind = this.hookUnique('template-parse-ast-attr-v-on', item, name, expr, modifiers, scope);
+        this.hookUnique('template-parse-ast-attr-v-on-apply', { parsed: parsedNativeBind, attrs: parsedAttr, rel });
+      } else if (bindRE.test(name)) { // :prop or v-bind:prop;
 
         let parsedBind = this.hookUnique('template-parse-ast-attr-v-bind', item, name, expr, modifiers, scope);
         if (isComponent) { // It's a prop
@@ -79,29 +160,8 @@ exports = module.exports = function () {
 
       } else if (onRE.test(name)) {  // @ or v-on:
         let parsedOn = this.hookUnique('template-parse-ast-attr-v-on', item, name.replace(onRE, ''), expr, modifiers, scope);
-
-
         this.hookUnique('template-parse-ast-attr-v-on-apply', { parsed: parsedOn, attrs: parsedAttr, rel });
         continue;
-
-        /*
-        if (isComponent) {
-          rel.on[parsedOn.event] = rel.handlers.length;
-          rel.handlers.push({
-            [parsedOn.event]: parsedOn.proxy
-          });
-        } else {
-          parsedAttr = Object.assign(parsedAttr, parsedOn.parsed);
-          if (parsedAttr['data-wpy-evt'] === undefined) {
-            parsedAttr['data-wpy-evt'] = rel.handlers.length;
-            rel.handlers.push({
-              [parsedOn.event]: parsedOn.proxy
-            });
-          } else {
-            rel.handlers[parsedAttr['data-wpy-evt']][parsedOn.event] = parsedOn.proxy
-          }
-        }
-        */
       } else {
         if (parsed) {
           parsedAttr = Object.assign(parsedAttr, parsed.attrs);
@@ -114,6 +174,7 @@ exports = module.exports = function () {
     item.parsedAttr = parsedAttr;
 
     return [item, scope, rel];
+    */
   });
 
   this.register('template-parse-ast-tag', function parseAstTag (item, rel) {
@@ -125,8 +186,8 @@ exports = module.exports = function () {
     let components = rel.components;
     if (components[item.name]) { // It's a user defined component
       logger.silly('tag', `Found user defined component "${item.name}"`);
-      item.attribs = item.attribs || {};
-      item.attribs['bind_init'] = "_initComponent";
+      item.parsedAttr = item.parsedAttr || {};
+      item.parsedAttr['bind_init'] = "_initComponent";
     } else if (html2wxmlMap[item.name]) {  // Tag is in the map list
       logger.silly('html2wxml', `Change "${item.name}" to "${html2wxmlMap[item.name]}"`);
       item.name = html2wxmlMap[item.name];
@@ -143,15 +204,16 @@ exports = module.exports = function () {
   });
 
   this.register('template-parse-ast', function parseAST (ast, scope, rel, ctx) {
+    let currentScope;
     ast.forEach(item => {
       if (item.type === 'tag') {
         [item, rel] = this.hookSeq('template-parse-ast-tag', item, rel);
       }
       if (item.attribs) {
-        [item, scope, rel] = this.hookSeq('template-parse-ast-attr', item, scope, rel, ctx);
+        [item, currentScope, rel] = this.hookSeq('template-parse-ast-attr', item, scope, rel, ctx);
       }
       if (item.children && item.children.length) {
-        [item.childen, scope, rel] = this.hookSeq('template-parse-ast', item.children, scope, rel, ctx);
+        [item.childen, currentScope, rel] = this.hookSeq('template-parse-ast', item.children, currentScope, rel, ctx);
       }
     });
     return [ast, scope, rel];

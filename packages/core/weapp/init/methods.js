@@ -26,7 +26,8 @@ const eventHandler = function (method, fn) {
 const proxyHandler = function (e) {
   let vm = this.$wepy;
   let type = e.type;
-  let dataset = e.currentTarget.dataset;
+  // touchstart do not have currentTarget
+  let dataset = (e.currentTarget || e.target).dataset;
   let evtid = dataset.wpyEvt;
   let modelId = dataset.modelId;
   let rel = vm.$rel || {};
@@ -75,11 +76,7 @@ const proxyHandler = function (e) {
   let $event = new Event(e);
 
   if (isFunc(fn)) {
-    if (fn.name === 'proxyHandlerWithEvent') {
-      return fn.apply(vm, params.concat($event));
-    } else {
-      return fn.apply(vm, params);
-    }
+    return fn.apply(vm, params.concat($event));
   } else if (!model) {
     throw new Error('Unrecognized event');
   }
@@ -136,4 +133,12 @@ export function patchMethods (output, methods, isComponent) {
     return vm;
   };
   target._proxy = proxyHandler;
+
+  // TODO: perf
+  // Only orginal component method goes to target. no need to add all methods.
+  if (methods) {
+    Object.keys(methods).forEach(method => {
+      target[method] = methods[method];
+    });
+  }
 };

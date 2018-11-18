@@ -11,22 +11,21 @@ const fs = require('fs-extra');
 const path = require('path');
 const chokidar = require('chokidar');
 const ResolverFactory = require('enhanced-resolve').ResolverFactory;
-const node = require("enhanced-resolve/lib/node");
-const NodeJsInputFileSystem = require("enhanced-resolve/lib/NodeJsInputFileSystem");
-const CachedInputFileSystem = require("enhanced-resolve/lib/CachedInputFileSystem");
+const node = require('enhanced-resolve/lib/node');
+const NodeJsInputFileSystem = require('enhanced-resolve/lib/NodeJsInputFileSystem');
+const CachedInputFileSystem = require('enhanced-resolve/lib/CachedInputFileSystem');
 const parseOptions = require('./parseOptions');
 const moduleSet = require('./moduleSet');
 const loader = require('./loader');
 const logger = require('./util/logger');
+const VENDOR_DIR = require('./util/const').VENDOR_DIR;
 const Hook = require('./hook');
 const tag = require('./tag');
-const walk = require("acorn/dist/walk");
+const walk = require('acorn/dist/walk');
 
 const initCompiler = require('./init/compiler');
 const initParser = require('./init/parser');
 const initPlugin = require('./init/plugin');
-
-const ENTRY_FILE = 'app.wpy';
 
 class Compile extends Hook {
   constructor (opt) {
@@ -35,7 +34,10 @@ class Compile extends Hook {
 
     this.version = require('../package.json').version;
     this.options = opt;
-    this.options.entry = path.resolve(path.join(this.options.src, ENTRY_FILE));
+
+    if (!path.isAbsolute(opt.entry)) {
+      this.options.entry = path.resolve(path.join(opt.src, opt.entry));
+    }
 
     this.clear();
     this.resolvers = {};
@@ -162,14 +164,14 @@ class Compile extends Hook {
 
   start () {
 
-    this.hookUnique('wepy-parser-wpy', this.options.entry, 'app').then(app => {
+    this.hookUnique('wepy-parser-wpy', { path: this.options.entry, type: 'app' }).then(app => {
 
       let sfc = app.sfc;
       let script = sfc.script;
       let styles = sfc.styles;
       let config = sfc.config;
 
-      let appConfig = config.parsed;
+      let appConfig = config.parsed.output;
       if (!appConfig.pages || appConfig.pages.length === 0) {
 
         this.hookUnique('error-handler', {
@@ -186,12 +188,15 @@ class Compile extends Hook {
 
       if (appConfig.subPackages) {
         appConfig.subPackages.forEach(sub => {
-          pages.push(path.resolve(app.file, '..', sub + this.options.wpyExt));
+           sub.pages.forEach(v => {
+            pages.push(path.resolve(app.file, '../'+sub.root || '', v + this.options.wpyExt));
+          });
+
         });
       }
 
       let tasks = pages.map(v => {
-        return this.hookUnique('wepy-parser-wpy', v);
+        return this.hookUnique('wepy-parser-wpy', { path: v, type: 'page' });
       });
 
       this.hookSeq('build-app', app);
@@ -203,23 +208,24 @@ class Compile extends Hook {
         if (!comps) {
           return null;
         }
-
         this.hookSeq('build-components', comps);
         this.hookUnique('output-components', comps);
 
         let components = [];
+        let originalComponents = [];
         let tasks = [];
 
         comps.forEach(comp => {
           let config = comp.sfc.config || {};
           let parsed = config.parsed || {};
-          let usingComponents = parsed.usingComponents || {};
+          let parsedComponents = parsed.components || [];
 
-          Object.keys(usingComponents).forEach(com => {
-            components.push(path.resolve(comp.file, '..', usingComponents[com] + this.options.wpyExt));
-          });
-          tasks = components.map(v => {
-            return this.hookUnique('wepy-parser-wpy', v);
+          parsedComponents.forEach(com => {
+            if (com.type === 'wepy') { // wepy 组件
+              tasks.push(this.hookUnique('wepy-parser-wpy', com));
+            } else if (com.type === 'weapp') { // 原生组件
+              tasks.push(this.hookUnique('wepy-parser-component', com));
+            }
           });
         });
 
@@ -265,10 +271,10 @@ class Compile extends Hook {
       return;
     }
     this.watchInitialized = true;
-    let watchOption = Object.assign({ ignoreInitial: true }, this.options.watchOption || {});
+    let watchOption = Object.assign({ ignoreInitial: true, depth: 99 }, this.options.watchOption || {});
     let target = path.resolve(this.context, this.options.target);
 
-    if (!watchOption.ignore) {
+    if (watchOption.ignore) {
       let type = Object.prototype.toString.call(watchOption.ignore);
       if (type === '[object String]' || type === '[object RegExp]') {
         watchOption.ignored = [watchOption.ignored];
@@ -276,9 +282,11 @@ class Compile extends Hook {
       } else if (type === '[object Array]') {
         watchOption.ignored.push(this.options.target);
       }
+    } else {
+      watchOption.ignored = [this.options.target];
     }
 
-    chokidar.watch(['.', '!./weapp'], watchOption).on('all', (evt, filepath) => {
+    chokidar.watch([this.options.src], watchOption).on('all', (evt, filepath) => {
       if (evt === 'change') {
         let absolutePath = path.resolve(filepath);
         if (this.involved[absolutePath]) {
@@ -308,16 +316,29 @@ class Compile extends Hook {
       }
 
       this.involved[ctx.file] = 1;
-      return this.hookUnique(hookKey, node, ctx.file).then(node => {
-        return this.hookUnique('wepy-parser-' + node.type, node, ctx);
-      });
+      return this.hookUnique(hookKey, node, ctx)
+        .then(node => {
+          return this.hookAsyncSeq('before-wepy-parser-' + node.type, { node, ctx });
+        })
+        .then(({ node, ctx }) => {
+          return this.hookUnique('wepy-parser-' + node.type, node, ctx);
+        });
     }
   }
 
-  getTarget (file) {
+  getTarget (file, targetDir) {
     let relative = path.relative(path.join(this.context, this.options.src), file);
-    let target = path.join(this.context, this.options.target, relative);
-    return target;
+    let targetFile = path.join(this.context, targetDir || this.options.target, relative);
+    return targetFile;
+  }
+
+  getModuleTarget (file, targetDir) {
+    let relative = path.relative(this.context, file);
+    let dirs = relative.split(path.sep);
+    dirs.shift();  // shift node_modules
+    relative = dirs.join(path.sep);
+    let targetFile = path.join(this.context, targetDir || this.options.target, VENDOR_DIR, relative);
+    return targetFile;
   }
 
   output (item) {
@@ -334,12 +355,18 @@ class Compile extends Hook {
     for (let k in outputMap) {
       if (sfc[k] && sfc[k].outputCode) {
         let filename = item.outputFile + '.' + outputMap[k];
-        logger.silly('output', 'write file: ' + filename);
-        fs.outputFile(filename, sfc[k].outputCode, function (err) {
-          if (err) {
-            console.log(err);
-          }
-        });
+        let code = sfc[k].outputCode;
+
+        this.hookAsyncSeq('output-file', { filename, code }).then(({ filename, code }) => {
+          logger.silly('output', 'write file: ' + filename);
+          fs.outputFile(filename, sfc[k].outputCode, function (err) {
+            if (err) {
+              console.log(err);
+            }
+          });
+        })
+
+
       }
     }
   }

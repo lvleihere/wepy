@@ -21,7 +21,7 @@ function initStrats () {
 
   strats = config.optionMergeStrategies;
 
-  strats.data = strats.props = strats.methods = strats.computed = strats.watch = function (output, option, key, data) {
+  strats.data = strats.props = strats.methods = strats.computed = strats.watch = strats.hooks = function (output, option, key, data) {
     option[key] = simpleMerge(option[key], data);
   };
 
@@ -43,7 +43,7 @@ function initStrats () {
 }
 
 export function patchMixins (output, option, mixins) {
-  if (!mixins) {
+  if (!mixins && !$global.mixin) {
     return;
   }
 
@@ -55,6 +55,7 @@ export function patchMixins (output, option, mixins) {
 
   if (isArr(mixins)) {
     mixins.forEach(mixin => patchMixins(output, option, mixin));
+    globalMixinPatched = false;
   } else {
 
     if (!strats) {

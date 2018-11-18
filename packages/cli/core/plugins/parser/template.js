@@ -3,6 +3,15 @@ const errorHandler = require('../../util/error');
 
 exports = module.exports = function () {
   this.register('wepy-parser-template', function (node, ctx) {
+
+    // If it's weapp, do not compile it.
+    if (ctx.type === 'weapp') {
+      return Promise.resolve({
+        code: node.content,
+        rel: {}
+      });
+    }
+
     let code = node.content;
     let msg = xmllint.verify(code);
     msg.forEach(item => {
@@ -21,13 +30,12 @@ exports = module.exports = function () {
     let components = {};
     let sfcConfig = ctx.sfc.config;
 
-    if (sfcConfig  && sfcConfig.parsed.usingComponents) {
-      let usingComponents = sfcConfig.parsed.usingComponents;
-      for (let k in usingComponents) {
-        components[k] = {
-          path: usingComponents[k]
-        };
-      }
+    let usingComponents = sfcConfig && sfcConfig.parsed.output  ? sfcConfig.parsed.output.usingComponents : {};
+
+    for (let k in usingComponents) {
+      components[k] = {
+        path: usingComponents[k]
+      };
     }
 
     return this.hookUnique('template-parse', node.content, components, ctx).then(rst => {

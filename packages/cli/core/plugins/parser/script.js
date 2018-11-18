@@ -98,7 +98,10 @@ exports = module.exports = function () {
             }
           }, {
             file: rst.path,
-            npm: npm
+            npm: npm,
+            component: ctx.component,
+            type: ctx.type,
+            dep: true, // It's a dep
           });
         } else {
           return this.applyCompiler({
@@ -130,9 +133,10 @@ exports = module.exports = function () {
   this.register('wepy-parser-script', function (node, ctx) {
     let assets = this.assets;
     let npmModules = this.npm;
-    if (ctx.npm) {
-      if (this.vendors.pending(ctx.file)) {
-        return Promise.resolve(this.vendors.get(ctx.file));
+    if (ctx.npm && !ctx.component) {
+      if (this.vendors.pending(ctx.file)) { // file compile is pending
+        let moduleId = this.vendors.get(ctx.file);
+        return Promise.resolve(moduleId);
       }
       this.vendors.add(ctx.file, 'npm');
     }
@@ -148,9 +152,8 @@ exports = module.exports = function () {
     walker.deps.forEach(dep => {
       depTasks.push(this.hookUnique('wepy-parser-dep', node, ctx, dep));
     });
-
     return Promise.all(depTasks).then(rst => {
-      let type = ctx.npm ? 'npm' : (ctx.sfc ? 'component' : 'require');
+
       let obj = {
         file: ctx.file,
         parser: walker,
@@ -158,10 +161,19 @@ exports = module.exports = function () {
         encoding: node.compiled.encoding || 'utf-8',
         source: source,
         depModules: rst,
-        type: type
+        npm: !!ctx.npm,
+        type: ctx.type,
+        component: ctx.component,
       };
-      let assets = ctx.npm ? this.vendors : this.assets;
-      assets.update(ctx.file, obj, type);
+
+      // If it's not a component, and it's npm package, then add to vendors;
+      let assets = ctx.npm && !(ctx.component && ctx.type === 'weapp') ? this.vendors : this.assets;
+      assets.update(ctx.file, obj, {
+        component: ctx.component,
+        npm: ctx.npm,
+        dep: ctx.dep,
+        type: ctx.type
+      });
       obj.id = assets.get(ctx.file);
       return obj;
     });

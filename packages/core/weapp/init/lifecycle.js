@@ -5,6 +5,7 @@ import { observe } from './../observer/index';
 import { proxy } from './data';
 import Watcher from './../observer/watcher';
 import $global from './../global';
+import { initHooks } from './hooks';
 import { initProps } from './props';
 import { initWatch } from './watch';
 import { initRender } from './render';
@@ -48,6 +49,8 @@ export function patchAppLifecycle (appConfig, options, rel) {
     let result;
     vm.$wx = this;
     this.$wepy = vm;
+
+    initHooks(vm, options.hooks);
 
     initMethods(vm, options.methods);
 
@@ -95,6 +98,8 @@ export function patchLifecycle (output, options, rel, isComponent) {
     if (!vm.$app) {
       // vm.$app = $global.$app;
     }
+
+    initHooks(vm, options.hooks);
 
     initProps(vm, output.properties);
 
@@ -148,6 +153,72 @@ export function patchLifecycle (output, options, rel, isComponent) {
       console.log('TODO: page attached');
 
       return callUserMethod(vm, vm.$options, 'attached', args);
+    }
+
+    // Page lifecycle will be called under methods
+    // e.g:
+    // Component({
+    //   methods: {
+    //     onLoad () {
+    //       console.log('page onload')
+    //     }
+    //   }
+    // })
+
+    let pageLifecycle = output.methods;
+
+    pageLifecycle.onLoad = function (...args) {
+      // TODO: onLoad
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onLoad', args);
+    }
+
+    pageLifecycle.onShow = function (...args) {
+      // TODO: onShow
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onShow', args);
+    }
+
+    pageLifecycle.onHide = function (...args) {
+      // TODO: onHide
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onHide', args);
+    }
+
+    pageLifecycle.onUnload = function (...args) {
+      // TODO: onUnload
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onUnload', args);
+    }
+
+    pageLifecycle.onPullDownRefresh = function (...args) {
+      // TODO: onPullDownRefresh
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onPullDownRefresh', args);
+    }
+
+    pageLifecycle.onReachBottom = function (...args) {
+      // TODO: onReachBottom
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onReachBottom', args);
+    }
+
+    pageLifecycle.onShareAppMessage = function (...args) {
+      // TODO: onShareAppMessage
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onShareAppMessage', args);
+    }
+
+    pageLifecycle.onPageScroll = function (...args) {
+      // TODO: onPageScroll
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onPageScroll', args);
+    }
+
+    pageLifecycle.onTabItemTap = function (...args) {
+      // TODO: onTabItemTap
+      let vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onTabItemTap', args);
     }
   }
 

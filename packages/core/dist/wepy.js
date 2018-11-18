@@ -138,7 +138,7 @@ function extend () {
   // Handle case when target is a string or something (possible in deep copy)
   if ( typeof target !== 'object' && !(typeof(target) === 'function') ) {
     target = {};
-}
+  }
 
   // Extend jQuery itself if only one argument is passed
   if ( i === length ) {
@@ -820,6 +820,34 @@ function set (vm, target, key, val) {
 }
 
 /**
+ * Delete a property and trigger change if necessary.
+ */
+function del (target, key) {
+  if (Array.isArray(target) && isValidArrayIndex(key)) {
+    target.splice(key, 1);
+    return
+  }
+  var ob = (target).__ob__;
+  if (target._isVue || (ob && ob.vmCount)) {
+    "development" !== 'production' && warn(
+      'Avoid deleting properties on a Vue instance or its root $data ' +
+      '- just set it to null.'
+    );
+    return
+  }
+  if (!hasOwn(target, key)) {
+    return
+  }
+  // set $dirty
+  target[key] = null;
+  delete target[key];
+  if (!ob) {
+    return
+  }
+  ob.dep.notify();
+}
+
+/**
  * Collect dependencies on array elements when the array is touched, since
  * we cannot intercept array element access like property getters.
  */
@@ -839,6 +867,10 @@ var Base = function Base () {
 
 Base.prototype.$set = function $set (target, key, val) {
   return set(this, target, key, val);
+};
+
+Base.prototype.$delete = function $delete (target, key) {
+  return del(target, key);
 };
 
 Base.prototype.$on = function $on (event, fn) {
@@ -1373,7 +1405,7 @@ function initComputed (vm, computed) {
     return;
   }
   var watchers = vm._computedWatchers = Object.create(null);
-  var computedWatcherOptions = { lazy: true };
+  var computedWatcherOptions = { lazy: false };
 
   Object.keys(computed).forEach(function (key) {
     var def$$1 = computed[key];
@@ -1383,7 +1415,10 @@ function initComputed (vm, computed) {
       console.error(("Getter is missing for computed property \"" + key + "\""));
     }
 
-    watchers[key] = new Watcher(vm, getter || function () {}, function () {}, computedWatcherOptions);
+    // push to dirty after dep called.
+    watchers[key] = new Watcher(vm, getter || function () {}, function (newv, oldv) {
+      vm.$dirty.push(key, key, newv);
+    }, computedWatcherOptions);
 
     if (typeof def$$1 === 'function') {
       sharedPropertyDefinition.get = createComputedGetter(key);
@@ -1407,54 +1442,6 @@ var WepyApp = (function (Base$$1) {
   WepyApp.prototype.constructor = WepyApp;
 
   return WepyApp;
-}(Base));
-
-var WepyPage = (function (Base$$1) {
-  function WepyPage () {
-    Base$$1.apply(this, arguments);
-  }
-
-  if ( Base$$1 ) WepyPage.__proto__ = Base$$1;
-  WepyPage.prototype = Object.create( Base$$1 && Base$$1.prototype );
-  WepyPage.prototype.constructor = WepyPage;
-
-  WepyPage.prototype.$navigate = function $navigate (url, params) {
-    this.$route('navigate', url, params);
-  };
-
-  WepyPage.prototype.$redirect = function $redirect (url, params) {
-    this.$route('redirect', url, params);
-  };
-
-  WepyPage.prototype.$back = function $back () {};
-
-  WepyPage.prototype.$route = function $route (type, url, params) {
-    if ( params === void 0 ) params = {};
-
-    if (isStr(url)) {
-      var paramsStr = '';
-      if (isObj(params)) {
-        for (var k in params) {
-          if (isObj(params[k])) {
-            s += k + "=" + (encodeURIComponent(params[k]));
-          }
-        }
-      } else if (isStr(params) && params[0] === '?') {
-        paramsStr = params;
-      }
-      if (paramsStr)
-        { url = url + '?' + paramsStr; }
-
-      url = { url: url };
-    } else {
-       // TODO: { url: './a?a=1&b=2' }
-    }
-
-    var fn = wx[type + 'To'];
-    fn && fn(url);
-  };
-
-  return WepyPage;
 }(Base));
 
 var WepyComponent = (function (Base$$1) {
@@ -1498,31 +1485,96 @@ var WepyComponent = (function (Base$$1) {
   return WepyComponent;
 }(Base));
 
+var WepyPage = (function (WepyComponent$$1) {
+  function WepyPage () {
+    WepyComponent$$1.apply(this, arguments);
+  }
+
+  if ( WepyComponent$$1 ) WepyPage.__proto__ = WepyComponent$$1;
+  WepyPage.prototype = Object.create( WepyComponent$$1 && WepyComponent$$1.prototype );
+  WepyPage.prototype.constructor = WepyPage;
+
+  WepyPage.prototype.$navigate = function $navigate (url, params) {
+    this.$route('navigate', url, params);
+  };
+
+  WepyPage.prototype.$redirect = function $redirect (url, params) {
+    this.$route('redirect', url, params);
+  };
+
+  WepyPage.prototype.$back = function $back () {};
+
+  WepyPage.prototype.$route = function $route (type, url, params) {
+    if ( params === void 0 ) params = {};
+
+    var wxparams;
+    if (isStr(url)) {
+      var paramsList = [];
+      if (isObj(params)) {
+        for (var k in params) {
+          if (!isUndef(params[k])) {
+            paramsList.push((k + "=" + (encodeURIComponent(params[k]))));
+          }
+        }
+      }
+      if (paramsList.length)
+        { url = url + '?' + paramsList.join('&'); }
+
+      wxparams = { url: url };
+    } else {
+      wxparams = url;
+    }
+    var fn = wx[type + 'To'];
+    if (isFunc(fn)) {
+      return fn(wxparams);
+    }
+  };
+
+  return WepyPage;
+}(WepyComponent));
+
 var $global = {};
+
+function callUserHook (vm, hookName, arg) {
+  var pageHook = vm.hooks[hookName];
+  var appHook = vm.$app.hooks[hookName];
+
+  arg = isFunc(pageHook) ? pageHook.call(vm, arg) : arg;
+  arg = isFunc(appHook) ? appHook.call(vm, arg) : arg;
+
+  return arg;
+}
+
+function initHooks(vm, hooks) {
+  if ( hooks === void 0 ) hooks = {};
+
+  vm.hooks = hooks;
+}
 
 function initRender (vm, keys) {
   vm._init = false;
   return new Watcher(vm, function () {
     if (!vm._init) {
       keys.forEach(function (key) { return clone(vm[key]); });
-      vm._init = true;
     }
 
     if (vm.$dirty.length()) {
       var keys$1 = vm.$dirty.get('key');
       var dirty = vm.$dirty.pop();
-      // TODO: optimize
-      Object.keys(vm._computedWatchers || []).forEach(function (k) {
-        dirty[k] = vm[k];
-      });
 
       // TODO: reset subs
       Object.keys(keys$1).forEach(function (key) { return clone(vm[key]); });
 
-      console.log("setData[" + (vm.$dirty.type) + "]: " + JSON.stringify(dirty));
-      vm._fromSelf = true;
-      vm.$wx.setData(dirty);
+      if (vm._init) {
+        dirty = callUserHook(vm, 'before-setData', dirty);
+      }
+
+      // vm._fromSelf = true;
+      if (dirty) {
+        vm.$wx.setData(dirty);
+      }
     }
+    vm._init = true;
   }, function () {
 
   }, null, true);
@@ -1659,18 +1711,22 @@ var Event = function Event (e) {
   this.$wx = e;
   this.type = e.type;
   this.timeStamp = e.timeStamp;
-  this.x = detail.x;
-  this.y = detail.y;
+  if (detail) {
+    this.x = detail.x;
+    this.y = detail.y;
+  }
 
   this.target = target;
   this.currentTarget = currentTarget;
   this.touches = e.touches;
+  this.changedTouches = e.changedTouches;
 };
 
 var proxyHandler = function (e) {
   var vm = this.$wepy;
   var type = e.type;
-  var dataset = e.currentTarget.dataset;
+  // touchstart do not have currentTarget
+  var dataset = (e.currentTarget || e.target).dataset;
   var evtid = dataset.wpyEvt;
   var modelId = dataset.modelId;
   var rel = vm.$rel || {};
@@ -1719,11 +1775,7 @@ var proxyHandler = function (e) {
   var $event = new Event(e);
 
   if (isFunc(fn)) {
-    if (fn.name === 'proxyHandlerWithEvent') {
-      return fn.apply(vm, params.concat($event));
-    } else {
-      return fn.apply(vm, params);
-    }
+    return fn.apply(vm, params.concat($event));
   } else if (!model) {
     throw new Error('Unrecognized event');
   }
@@ -1768,6 +1820,14 @@ function patchMethods (output, methods, isComponent) {
     return vm;
   };
   target._proxy = proxyHandler;
+
+  // TODO: perf
+  // Only orginal component method goes to target. no need to add all methods.
+  if (methods) {
+    Object.keys(methods).forEach(function (method) {
+      target[method] = methods[method];
+    });
+  }
 }
 
 /*
@@ -1863,6 +1923,8 @@ function patchAppLifecycle (appConfig, options, rel) {
     vm.$wx = this;
     this.$wepy = vm;
 
+    initHooks(vm, options.hooks);
+
     initMethods(vm, options.methods);
 
     return callUserMethod(vm, vm.$options, 'onLaunch', args);
@@ -1892,6 +1954,8 @@ function patchLifecycle (output, options, rel, isComponent) {
     }
 
     vm.$id = ++comid + (isComponent ? '.1' : '.0');
+
+    initHooks(vm, options.hooks);
 
     initProps(vm, output.properties);
 
@@ -1952,6 +2016,99 @@ function patchLifecycle (output, options, rel, isComponent) {
 
       return callUserMethod(vm, vm.$options, 'attached', args);
     };
+
+    // Page lifecycle will be called under methods
+    // e.g:
+    // Component({
+    //   methods: {
+    //     onLoad () {
+    //       console.log('page onload')
+    //     }
+    //   }
+    // })
+
+    var pageLifecycle = output.methods;
+
+    pageLifecycle.onLoad = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onLoad
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onLoad', args);
+    };
+
+    pageLifecycle.onShow = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onShow
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onShow', args);
+    };
+
+    pageLifecycle.onHide = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onHide
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onHide', args);
+    };
+
+    pageLifecycle.onUnload = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onUnload
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onUnload', args);
+    };
+
+    pageLifecycle.onPullDownRefresh = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onPullDownRefresh
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onPullDownRefresh', args);
+    };
+
+    pageLifecycle.onReachBottom = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onReachBottom
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onReachBottom', args);
+    };
+
+    pageLifecycle.onShareAppMessage = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onShareAppMessage
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onShareAppMessage', args);
+    };
+
+    pageLifecycle.onPageScroll = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onPageScroll
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onPageScroll', args);
+    };
+
+    pageLifecycle.onTabItemTap = function () {
+      var args = [], len = arguments.length;
+      while ( len-- ) args[ len ] = arguments[ len ];
+
+      // TODO: onTabItemTap
+      var vm = this.$wepy;
+      return callUserMethod(vm, vm.$options, 'onTabItemTap', args);
+    };
   }
 
   output.ready = function () {
@@ -1991,7 +2148,7 @@ function initStrats () {
 
   strats = config$1.optionMergeStrategies;
 
-  strats.data = strats.props = strats.methods = strats.computed = strats.watch = function (output, option, key, data) {
+  strats.data = strats.props = strats.methods = strats.computed = strats.watch = strats.hooks = function (output, option, key, data) {
     option[key] = simpleMerge(option[key], data);
   };
 
@@ -2013,7 +2170,7 @@ function initStrats () {
 }
 
 function patchMixins (output, option, mixins) {
-  if (!mixins) {
+  if (!mixins && !$global.mixin) {
     return;
   }
 
@@ -2025,6 +2182,7 @@ function patchMixins (output, option, mixins) {
 
   if (isArr(mixins)) {
     mixins.forEach(function (mixin) { return patchMixins(output, option, mixin); });
+    globalMixinPatched = false;
   } else {
 
     if (!strats) {
@@ -2037,28 +2195,34 @@ function patchMixins (output, option, mixins) {
   }
 }
 
-function page (option, rel) {
-  if ( option === void 0 ) option = {};
+function page (opt, rel) {
+  if ( opt === void 0 ) opt = {};
 
 
-  var pageConfig = {};
+  var pageConfig = {
+    externalClasses: opt.externalClasses || [],
+    // support component options property
+    // example: options: {addGlobalClass:true}
+    options: opt.options || {}
+  };
 
-  patchMixins(pageConfig, option, option.mixins);
 
-  if (option.properties) {
-    pageConfig.properties = option.properties;
-    if (option.props) {
+  patchMixins(pageConfig, opt, opt.mixins);
+
+  if (opt.properties) {
+    pageConfig.properties = opt.properties;
+    if (opt.props) {
       console.warn("props will be ignore, if properties is set");
     }
-  } else if (option.props) {
-    patchProps(pageConfig, option.props);
+  } else if (opt.props) {
+    patchProps(pageConfig, opt.props);
   }
 
-  patchMethods(pageConfig, option.methods);
+  patchMethods(pageConfig, opt.methods);
 
-  patchData(pageConfig, option.data);
+  patchData(pageConfig, opt.data);
 
-  patchLifecycle(pageConfig, option, rel);
+  patchLifecycle(pageConfig, opt, rel);
 
   return Component(pageConfig);
 }
@@ -2071,24 +2235,33 @@ function app$1 (option, rel) {
   return App(appConfig);
 }
 
-function component (option, rel) {
+function component (opt, rel) {
+  if ( opt === void 0 ) opt = {};
 
-  var compConfig = {};
 
-  if (option.properties) {
-    compConfig.properties = option.properties;
-    if (option.props) {
+  var compConfig = {
+    externalClasses: opt.externalClasses || [],
+    // support component options property
+    // example: options: {addGlobalClass:true}
+    options: opt.options || {}
+  };
+
+  patchMixins(compConfig, opt, opt.mixins);
+
+  if (opt.properties) {
+    compConfig.properties = opt.properties;
+    if (opt.props) {
       console.warn("props will be ignore, if properties is set");
     }
-  } else if (option.props) {
-    patchProps(compConfig, option.props);
+  } else if (opt.props) {
+    patchProps(compConfig, opt.props);
   }
 
-  patchMethods(compConfig, option.methods, true);
+  patchMethods(compConfig, opt.methods, true);
 
-  patchData(compConfig, option.data, true);
+  patchData(compConfig, opt.data, true);
 
-  patchLifecycle(compConfig, option, rel, true);
+  patchLifecycle(compConfig, opt, rel, true);
 
   return Component(compConfig);
 }
